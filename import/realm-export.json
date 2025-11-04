@@ -1,0 +1,86 @@
+{
+  "id": "demo-realm",
+  "realm": "demo-realm",
+  "enabled": true,
+  "displayName": "Demo Realm",
+  "users": [
+    {
+      "username": "kavya",
+      "enabled": true,
+      "credentials": [
+        {
+          "type": "password",
+          "value": "kavya",
+          "temporary": false
+        }
+      ],
+      "groups": ["/admin"]
+    },
+    {
+      "username": "sai",
+      "enabled": true,
+      "credentials": [
+        {
+          "type": "password",
+          "value": "sai",
+          "temporary": false
+        }
+      ],
+      "groups": ["/admin"]
+    },
+    {
+      "username": "srivatsa",
+      "enabled": true,
+      "credentials": [
+        {
+          "type": "password",
+          "value": "srivatsa",
+          "temporary": false
+        }
+      ],
+      "groups": ["/readonly"]
+    }
+  ],
+  "groups": [
+    {
+      "name": "admin"
+    },
+    {
+      "name": "readonly"
+    }
+  ],
+  "clients": [
+    {
+      "clientId": "vue-client",
+      "name": "Vue SPA Client",
+      "publicClient": true,
+      "redirectUris": [
+        "http://localhost:5173/*"
+      ],
+      "protocol": "openid-connect",
+      "attributes": {
+        "pkce.code.challenge.method": "S256"
+      },
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": true,
+      "webOrigins": [
+        "http://localhost:5173"
+      ]
+    },
+    {
+      "clientId": "fastapi-backend",
+      "name": "FastAPI Backend",
+      "publicClient": true,
+      "protocol": "openid-connect",
+      "redirectUris": [],
+      "webOrigins": [],
+      "bearerOnly": false,
+      "serviceAccountsEnabled": false,
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false
+    }
+  ],
+  "protocolMappers": [],
+  "roles": {}
+}

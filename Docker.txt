@@ -1,0 +1,9 @@
+Docker
+
+docker system prune -a
+docker compose up
+
+if things go wrong anywhere, do-
+
+docker logs -f <first-3-letters-of-docker-container>
+get the error, and share w/ me and chatgpt.
