@@ -103,7 +103,7 @@ cd keycloak-fastapi-vue-poc
 7. Create a **User**:
    - Username: `demo`
    - Set a password (`demo`)
-   - Assign the role `user`.
+   - Assign the role `dashboard`.
 
 ---
 

@@ -97,13 +97,13 @@ cd keycloak-fastapi-vue-poc
    - **Root URL:** `http://localhost:5173`
 
 6. Create a **Role**:
-   - Name: `user`
+   - Name: `dashboard`
    - Save it.
 
 7. Create a **User**:
    - Username: `demo`
    - Set a password (`demo`)
-   - Assign the role `user`.
+   - Assign the role `dashboard`.
 
 ---
 
@@ -332,7 +332,3 @@ Once validated, this architecture can be easily extended to **microservices**, *
 
 ---
 
-**Author:**  
-👨‍💻 *Your Name*  
-📧 *you@example.com*  
-🌐 *Keycloak + FastAPI + Vue3 Demo, 2025*
