@@ -331,8 +331,3 @@ This POC demonstrates how to integrate **Keycloak**, **FastAPI**, and **Vue 3** 
 Once validated, this architecture can be easily extended to **microservices**, **multi-role dashboards**, or **enterprise SSO integrations**.
 
 ---
-
-**Author:**  
-👨‍💻 *Your Name*  
-📧 *you@example.com*  
-🌐 *Keycloak + FastAPI + Vue3 Demo, 2025*
