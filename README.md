@@ -97,7 +97,7 @@ cd keycloak-fastapi-vue-poc
    - **Root URL:** `http://localhost:5173`
 
 6. Create a **Role**:
-   - Name: `user`
+   - Name: `dashboard`
    - Save it.
 
 7. Create a **User**:
