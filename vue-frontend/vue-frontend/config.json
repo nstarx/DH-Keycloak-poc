@@ -1,0 +1,8 @@
+{
+  "provider": "oidc",
+  "authority": "https://<issuer-domain>",
+  "clientId": "vue-client",
+  "redirectUri": "http://localhost:5173/callback",
+  "postLogoutRedirectUri": "http://localhost:5173",
+  "scope": "openid profile email offline_access"
+}

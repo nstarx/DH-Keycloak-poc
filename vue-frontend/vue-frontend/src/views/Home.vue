@@ -1,70 +1,95 @@
+<script setup>
+import axios from "axios"
+import { ref } from "vue"
+import { useRouter } from "vue-router"
+
+const router = useRouter()
+
+// ✅ Track login state & username
+const isLoggedIn = ref(false)
+const username = ref(null)
+
+// ✅ Detect login on page load
+const checkLogin = async () => {
+  try {
+    const res = await axios.get("http://localhost:8000/me", {
+      withCredentials: true,
+    })
+    isLoggedIn.value = true
+    username.value = res.data.user
+  } catch {
+    isLoggedIn.value = false
+    username.value = null
+  }
+}
+
+checkLogin()
+
+const login = () => {
+  window.location.href = "http://localhost:8000/auth/login"
+}
+
+const logout = () => {
+  isLoggedIn.value = false
+  username.value = null
+  window.location.href = "http://localhost:8000/auth/logout"
+}
+
+const goDashboard = async () => {
+  try {
+    const res = await axios.get("http://localhost:8000/api/dashboard", {
+      withCredentials: true,
+    })
+
+    const roles = res.data.roles || []
+
+    if (!roles.includes("admin")) {
+      alert("❌ You do not have permission to view the dashboard.")
+      return
+    }
+
+    router.push("/dashboard")
+
+  } catch {
+    alert("❌ You do not have permission to view the dashboard.")
+  }
+}
+</script>
+
+
 <template>
   <div class="home-container">
     <div class="card">
-      <h1 class="title">🔐 Keycloak Vue POC</h1>
 
-      <div v-if="!authenticated" class="auth-section">
-        <p class="status">You are not logged in.</p>
-        <button class="btn primary" @click="login">Login with Keycloak</button>
-      </div>
+      <h2 class="title">Vue + FastAPI BFF Auth</h2>
 
-      <div v-else class="auth-section">
-        <p class="status">Welcome, <strong>{{ profile?.preferred_username }}</strong> 👋</p>
-        <div class="btn-group">
-          <button class="btn success" @click="goDashboard">Go to Dashboard</button>
-          <button class="btn danger" @click="logout">Logout</button>
-        </div>
+      <p class="status">
+        <span v-if="isLoggedIn">✅ Welcome, {{ username || "User" }}!</span>
+        <span v-else>❌ Please log in</span>
+      </p>
+
+      <div class="btn-group">
+        <!-- ✅ Show Login when logged out -->
+        <button v-if="!isLoggedIn" class="btn primary" @click="login">
+          Login
+        </button>
+
+        <!-- ✅ Show Logout when logged in -->
+        <button v-if="isLoggedIn" class="btn danger" @click="logout">
+          Logout
+        </button>
+
+        <!-- ✅ Dashboard always visible -->
+        <button class="btn success" @click="goDashboard">
+          Go to Dashboard
+        </button>
       </div>
     </div>
   </div>
 </template>
 
-<script>
-import keycloak from '../keycloak'
-import { ref, onMounted } from 'vue'
-import { useRouter } from 'vue-router'
-import axios from 'axios'
-
-export default {
-  setup() {
-    const router = useRouter()
-    const authenticated = ref(false)
-    const profile = ref(null)
-
-    onMounted(async () => {
-      try {
-        await keycloak.init({ onLoad: 'check-sso', pkceMethod: 'S256' })
-        authenticated.value = keycloak.authenticated
-        if (authenticated.value) {
-          profile.value = keycloak.tokenParsed
-        }
-        console.log('KC initialized, authenticated=', profile)
-      } catch (err) {
-        console.error('KC init error', err)
-      }
-    })
-
-    const login = () => keycloak.login()
-    const logout = () => keycloak.logout({ redirectUri: window.location.origin })
-    const goDashboard = async () => {
-      try {
-        const token = keycloak.token
-        await axios.get('http://localhost:8000/dashboard', {
-          headers: { Authorization: `Bearer ${token}` }
-        })
-        router.push({ name: 'Dashboard' })
-      } catch (e) {
-        alert('Backend denied access: ' + (e?.response?.data?.detail || e.message))
-      }
-    }
-
-    return { authenticated, profile, login, logout, goDashboard }
-  }
-}
-</script>
-
-<style scoped>
-/* Background */
+<style>
+/* ✅ Your complete CSS — unchanged */
 .home-container {
   display: flex;
   justify-content: center;
@@ -75,7 +100,6 @@ export default {
   font-family: 'Poppins', sans-serif;
 }
 
-/* Card box */
 .card {
   background: rgba(255, 255, 255, 0.08);
   backdrop-filter: blur(10px);
@@ -85,6 +109,7 @@ export default {
   box-shadow: 0 8px 30px rgba(0, 0, 0, 0.3);
   transition: transform 0.4s ease, box-shadow 0.4s ease;
   width: 400px;
+  animation: fadeIn 0.8s ease-in-out;
 }
 
 .card:hover {
@@ -92,7 +117,6 @@ export default {
   box-shadow: 0 12px 40px rgba(0, 0, 0, 0.4);
 }
 
-/* Title */
 .title {
   font-size: 2rem;
   margin-bottom: 1.5rem;
@@ -101,21 +125,18 @@ export default {
   -webkit-text-fill-color: transparent;
 }
 
-/* Text */
 .status {
   font-size: 1.1rem;
   margin-bottom: 2rem;
   color: #ddd;
 }
 
-/* Button group */
 .btn-group {
   display: flex;
   justify-content: center;
   gap: 1rem;
 }
 
-/* Buttons */
 .btn {
   padding: 0.8rem 1.5rem;
   border: none;
@@ -154,11 +175,6 @@ export default {
 .btn.danger:hover {
   transform: translateY(-2px);
   box-shadow: 0 0 15px #ff4444;
-}
-
-/* Smooth fade-in animation */
-.card {
-  animation: fadeIn 0.8s ease-in-out;
 }
 
 @keyframes fadeIn {

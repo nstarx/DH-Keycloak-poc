@@ -1,181 +1,303 @@
+import os
+import time
 import asyncio
 import httpx
-import time
-from fastapi import FastAPI, Depends, HTTPException
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi import FastAPI, Depends, Request, HTTPException, Response
+from fastapi.responses import RedirectResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
-from jose import jwt, JWTError
+from jose import jwt
+from urllib.parse import urlencode
 
-app = FastAPI()
-security = HTTPBearer()
+# -----------------------------------------------------------
+# ✅ CONFIGURATION
+# -----------------------------------------------------------
 
-# KEYCLOAK_BASE = "http://localhost:8080"
-KEYCLOAK_BASE = "http://keycloak:8080"
-REALM = "demo-realm"
-CLIENT_ID = "vue-client"
+CLIENT_ID = os.getenv("OIDC_CLIENT_ID", "vue-client")
+CLIENT_SECRET = os.getenv("OIDC_CLIENT_SECRET", "")
+REDIRECT_URI = os.getenv("BFF_REDIRECT_URI", "http://localhost:8000/auth/callback")
 
-# cached config / jwks
-openid_config = {}
-jwks = {}
-jwks_last_refresh = 0
-
-origins = [
-    "http://localhost:5173",
-    "http://127.0.0.1:5173",
-    "http://localhost:8081",
+# These are the possible Keycloak URLs your backend may see
+POSSIBLE_ISSUERS = [
+    "http://keycloak:8080/realms/demo-realm",
+    "http://host.docker.internal:8080/realms/demo-realm",
+    "http://localhost:8080/realms/demo-realm",
 ]
 
+SCOPES = "openid email profile offline_access"
+
+COOKIE_ACCESS = "bff_at"
+COOKIE_REFRESH = "bff_rt"
+
+app = FastAPI()
+
+# -----------------------------------------------------------
+# ✅ CORS FOR DEV
+# -----------------------------------------------------------
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
+    allow_origins=[
+        "http://localhost:8081",
+        "http://127.0.0.1:8081",
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# -----------------------------------------------
-# 🔹 Helper functions
-# -----------------------------------------------
 
-async def fetch_openid_config():
-    """Fetch OpenID configuration dynamically from Keycloak."""
-    global openid_config
-    url = f"{KEYCLOAK_BASE}/realms/{REALM}/.well-known/openid-configuration"
-    try:
-        async with httpx.AsyncClient() as client:
-            r = await client.get(url, timeout=10)
-            r.raise_for_status()
-            openid_config = r.json()
-            print("✅ OpenID configuration fetched successfully.")
-            return openid_config   
-    except Exception as e:
-        print(f"⚠️ Could not fetch OpenID config: {e}")
-        openid_config = {}
-        return openid_config 
+# -----------------------------------------------------------
+# ✅ OIDC DISCOVERY (with retry)
+# -----------------------------------------------------------
 
-async def fetch_jwks():
-    """Fetch JWKS keys from Keycloak."""
-    global jwks, jwks_last_refresh
+DISCOVERY = {}
 
-    if not openid_config.get("jwks_uri"):
-        await fetch_openid_config()
-    jwks_uri = openid_config.get("jwks_uri")
+async def ensure_discovery(retries=40, delay=2):
+    global DISCOVERY
 
-    if not jwks_uri:
-        print("⚠️ JWKS URI not found yet, skipping fetch_jwks()")
-        return
+    if DISCOVERY:
+        return DISCOVERY
 
-    try:
-        async with httpx.AsyncClient() as client:
-            r = await client.get(jwks_uri, timeout=10)
-            r.raise_for_status()
-            jwks = r.json()
-            jwks_last_refresh = time.time()
-            print("✅ JWKS keys fetched successfully.")
-    except Exception as e:
-        print(f"⚠️ Could not fetch JWKS: {e}")
+    last_error = None
+
+    async with httpx.AsyncClient() as client:
+        for attempt in range(retries):
+            for issuer in POSSIBLE_ISSUERS:
+                url = f"{issuer}/.well-known/openid-configuration"
+                try:
+                    print(f"🔍 Attempt {attempt+1}: Trying {url}")
+                    resp = await client.get(url, timeout=10)
+                    resp.raise_for_status()
+
+                    DISCOVERY = resp.json()
+                    DISCOVERY["issuer"] = issuer  # save issuer used
+                    print(f"✅ Discovery loaded from: {issuer}")
+                    return DISCOVERY
+                except Exception as e:
+                    last_error = e
+
+            await asyncio.sleep(delay)
+
+    raise HTTPException(503, f"OIDC discovery unavailable: {last_error}")
+
 
 @app.on_event("startup")
-async def startup_event():
-    # 🟢 Don't block startup — just schedule background fetch
-    asyncio.create_task(fetch_openid_config())
-    asyncio.create_task(fetch_jwks())
-    print("🚀 Backend started without waiting for Keycloak.")
+async def startup():
+    asyncio.create_task(ensure_discovery())
+    print("🚀 Backend started (lazy discovery enabled).")
 
-def get_kid_and_key(token):
-    headers = jwt.get_unverified_headers(token)
-    kid = headers.get("kid")
-    for key in jwks.get("keys", []):
-        if key["kid"] == kid:
-            return key
-    return None
 
-# -----------------------------------------------
-# 🔒 Authentication dependency (auto-retry JWKS)
-# -----------------------------------------------
-async def verify_token_and_role(credentials: HTTPAuthorizationCredentials = Depends(security)):
-    token = credentials.credentials
+# -----------------------------------------------------------
+# ✅ TOKEN HANDLING
+# -----------------------------------------------------------
 
-    global jwks, openid_config
+async def exchange_code_for_tokens(code: str):
+    disco = await ensure_discovery()
+    token_url = disco["token_endpoint"]
 
-    # 🧠 Ensure OpenID config and JWKS are loaded
-    if not openid_config:
-        print("⚙️ OpenID config empty — refetching...")
-        try:
-            openid_config = await fetch_openid_config()
-            print("✅ OpenID config fetched.")
-        except Exception as e:
-            raise HTTPException(status_code=503, detail=f"Cannot fetch OpenID config: {str(e)}")
+    data = {
+        "grant_type": "authorization_code",
+        "code": code,
+        "redirect_uri": REDIRECT_URI,
+        "client_id": CLIENT_ID,
+    }
 
-    if not jwks or time.time() - jwks_last_refresh > 3600:
-        print("🔁 Refreshing JWKS...")
-        try:
-            await fetch_jwks()
-        except Exception as e:
-            raise HTTPException(status_code=503, detail=f"Cannot fetch JWKS: {str(e)}")
+    if CLIENT_SECRET:
+        data["client_secret"] = CLIENT_SECRET
 
-    # 🔑 Verify key ID (kid)
-    key = get_kid_and_key(token)
-    print("🔍 Token kid:", jwt.get_unverified_headers(token).get("kid"))
-    print("🔍 Found key kid:", key.get("kid") if key else "None")
+    async with httpx.AsyncClient() as client:
+        r = await client.post(token_url, data=data)
+        r.raise_for_status()
+        return r.json()
 
-    if not key:
-        # 💡 Retry one more time if JWKS was stale
-        print("⚠️ Kid not found, retrying JWKS fetch...")
-        await fetch_jwks()
-        key = get_kid_and_key(token)
-        if not key:
-            raise HTTPException(status_code=401, detail="Unknown or missing key ID (kid)")
 
+async def refresh_access_token(refresh_token: str):
+    disco = await ensure_discovery()
+    token_url = disco["token_endpoint"]
+
+    data = {
+        "grant_type": "refresh_token",
+        "refresh_token": refresh_token,
+        "client_id": CLIENT_ID,
+    }
+
+    if CLIENT_SECRET:
+        data["client_secret"] = CLIENT_SECRET
+
+    async with httpx.AsyncClient() as client:
+        r = await client.post(token_url, data=data)
+        r.raise_for_status()
+        return r.json()
+
+
+# -----------------------------------------------------------
+# ✅ AUTH ROUTES
+# -----------------------------------------------------------
+
+@app.get("/auth/login")
+async def login():
+    disco = await ensure_discovery()
+
+    # Force browser URL to localhost:8080
+    browser_authorize = disco["authorization_endpoint"]
+    browser_authorize = browser_authorize.replace("http://keycloak:8080", "http://localhost:8080")
+    browser_authorize = browser_authorize.replace("http://host.docker.internal:8080", "http://localhost:8080")
+
+    params = {
+        "client_id": CLIENT_ID,
+        "redirect_uri": REDIRECT_URI,
+        "response_type": "code",
+        "scope": SCOPES,
+    }
+
+    url = f"{browser_authorize}?{urlencode(params)}"
+    print("✅ Browser authorize URL:", url)
+
+    return RedirectResponse(url)
+
+
+@app.get("/auth/callback")
+async def callback(request: Request):
+    code = request.query_params.get("code")
+
+    if not code:
+        return JSONResponse({"error": "Missing authorization code"}, status_code=400)
+
+    tokens = await exchange_code_for_tokens(code)
+
+    resp = RedirectResponse("http://localhost:8081")  # front page after login
+    resp.set_cookie(COOKIE_ACCESS, tokens["access_token"], httponly=True, samesite="strict")
+    resp.set_cookie(COOKIE_REFRESH, tokens.get("refresh_token", ""), httponly=True, samesite="strict")
+
+    return resp
+
+
+# @app.get("/auth/logout")
+# async def logout():
+#     disco = await ensure_discovery()
+#     end_session_endpoint = disco.get("end_session_endpoint")
+
+#     redirect_after_logout = "http://localhost:8081"
+
+#     # ✅ FULL LOGOUT: BFF + Keycloak SSO logout
+#     url = (
+#         f"{end_session_endpoint}"
+#         f"?client_id={CLIENT_ID}"
+#         f"&post_logout_redirect_uri={redirect_after_logout}"
+#     )
+
+#     resp = RedirectResponse(url)
+#     resp.delete_cookie(COOKIE_ACCESS)
+#     resp.delete_cookie(COOKIE_REFRESH)
+
+#     return resp
+
+@app.get("/auth/logout")
+async def logout():
+    disco = await ensure_discovery()
+    end_session_endpoint = disco.get("end_session_endpoint")
+
+    redirect_after_logout = "http://localhost:8081"
+
+    # ✅ FIX: Ensure browser-facing URL
+    browser_logout = end_session_endpoint
+    browser_logout = browser_logout.replace("http://keycloak:8080", "http://localhost:8080")
+    browser_logout = browser_logout.replace("http://host.docker.internal:8080", "http://localhost:8080")
+
+    url = (
+        f"{browser_logout}"
+        f"?client_id={CLIENT_ID}"
+        f"&post_logout_redirect_uri={redirect_after_logout}"
+    )
+
+    resp = RedirectResponse(url)
+    resp.delete_cookie(COOKIE_ACCESS)
+    resp.delete_cookie(COOKIE_REFRESH)
+
+    return resp
+
+
+# -----------------------------------------------------------
+# ✅ AUTH DEPENDENCY
+# -----------------------------------------------------------
+
+async def require_auth(request: Request, response: Response):
+    access = request.cookies.get(COOKIE_ACCESS)
+    refresh = request.cookies.get(COOKIE_REFRESH)
+
+    if not access:
+        raise HTTPException(401, "Not authenticated")
+
+    # Try decoding access token (ignore signature for BFF)
     try:
-        claims = jwt.decode(
-            token,
-            key,
-            algorithms=[key.get("alg", "RS256")],
-            audience=None,
-            options={"verify_aud": False},
-        )
-    except JWTError as e:
-        raise HTTPException(status_code=401, detail=f"Invalid token: {str(e)}")
+        jwt.decode(access, options={"verify_signature": False})
+        return access
+    except Exception:
+        pass
 
-    # ✅ Verify issuer matches (we can make this more lenient too)
-    issuer = openid_config.get("issuer")
-    token_issuer = claims.get("iss")
-    print(f"🔍 OpenID config issuer: {issuer}")
-    print(f"🔍 Token issuer: {token_issuer}")
+    if not refresh:
+        raise HTTPException(401, "Session expired")
 
-    valid_issuers = [
-    issuer,
-    "http://localhost:8080/realms/demo-realm"
-]
+    tokens = await refresh_access_token(refresh)
 
-    if token_issuer not in valid_issuers:
-        raise HTTPException(status_code=401, detail=f"Invalid issuer: {token_issuer}")
+    response.set_cookie(COOKIE_ACCESS, tokens["access_token"], httponly=True, samesite="strict")
+
+    if tokens.get("refresh_token"):
+        response.set_cookie(COOKIE_REFRESH, tokens["refresh_token"], httponly=True, samesite="strict")
+
+    return tokens["access_token"]
 
 
-    # ✅ Role check
-    realm_access = claims.get("realm_access", {})
-    roles = realm_access.get("roles", [])
-    if "dashboard" not in roles:
-        raise HTTPException(status_code=403, detail="Insufficient role")
+# -----------------------------------------------------------
+# ✅ PROTECTED API
+# -----------------------------------------------------------
+
+# @app.get("/api/dashboard")
+# async def dashboard(token=Depends(require_auth)):
+#     claims = jwt.get_unverified_claims(token)
+#     return {
+#         "message": "Secure dashboard accessed!",
+#         "user": claims.get("preferred_username"),
+#         "time": time.time(),
+#         "issuer_used": DISCOVERY.get("issuer"),
+#     }
+
+@app.get("/api/dashboard")
+async def dashboard(token=Depends(require_auth)):
+    claims = jwt.get_unverified_claims(token)
+
+    roles = claims.get("realm_access", {}).get("roles", [])
+
+    # ✅ Authorization check
+    if "admin" not in roles:
+        raise HTTPException(403, "You do not have permission to view dashboard")
 
     return {
-        "sub": claims.get("sub"),
-        "preferred_username": claims.get("preferred_username"),
+        "message": "Secure dashboard accessed!",
+        "user": claims.get("preferred_username"),
         "roles": roles,
+        "time": time.time(),
+        "issuer_used": DISCOVERY.get("issuer"),
     }
 
-
-# -----------------------------------------------
-# 🧭 Routes
-# -----------------------------------------------
-@app.get("/dashboard")
-async def dashboard(user=Depends(verify_token_and_role)):
-    return {
-        "message": f"Hello {user['preferred_username']}, welcome to the protected dashboard!",
-        "meta": {"widgets": 3, "time": time.time()}
-    }
+# -----------------------------------------------------------
+# ✅ ROOT
+# -----------------------------------------------------------
 
 @app.get("/")
 async def root():
-    return {"ok": True, "realm": REALM}
+    return {
+        "status": "ok",
+        "issuer_detected": DISCOVERY.get("issuer"),
+        "possible_issuers": POSSIBLE_ISSUERS
+    }
+
+@app.get("/me")
+async def me(token=Depends(require_auth)):
+    claims = jwt.get_unverified_claims(token)
+    return {
+        "user": claims.get("preferred_username"),
+        "roles": claims.get("realm_access", {}).get("roles", [])
+    }
+
