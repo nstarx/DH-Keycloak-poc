@@ -1,0 +1,163 @@
+openapi: 3.0.0
+
+info:
+  title: FastAPI BFF Authentication API (Keycloak OIDC)
+  version: "1.0.0"
+  description: |
+    Machine-readable API specification for the **FastAPI Backend-for-Frontend (BFF)** 
+    integrated with **Keycloak OIDC authentication**.
+
+    This backend implements:
+    1. **Browser-based OIDC Login** → Redirects user to Keycloak.
+    2. **Authorization Code + Refresh Token Exchange** using the BFF pattern.
+    3. **Secure HttpOnly Cookies** for access & refresh tokens.
+    4. **Session Validation Endpoint** for the Vue frontend.
+    5. **Role-Based Access Control (RBAC)** for admin-only dashboard access.
+
+servers:
+  - url: http://localhost:8000
+    description: Local FastAPI BFF server
+
+paths:
+
+  /auth/login:
+    get:
+      summary: Start Login (Redirect to Keycloak)
+      description: |
+        Redirects the browser to the Keycloak login screen.
+
+        This is not an API call for tools—it's a browser redirect endpoint.
+      tags:
+        - Authentication
+      responses:
+        "307":
+          description: Temporary Redirect to Keycloak
+
+  /auth/callback:
+    get:
+      summary: OIDC Callback Handler
+      description: |
+        Handles Keycloak redirect after login.
+
+        Exchanges `authorization_code` for:
+        - access_token (stored as HttpOnly cookie)
+        - refresh_token (stored as HttpOnly cookie)
+
+        Returns user to the frontend after storing tokens.
+      tags:
+        - Authentication
+      parameters:
+        - name: code
+          in: query
+          required: false
+          schema:
+            type: string
+          description: OIDC authorization code from Keycloak
+        - name: session_state
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        "200":
+          description: OK (Only for debugging)
+        "400":
+          description: Missing or invalid authorization code
+        "307":
+          description: Redirect back to frontend after successful login
+
+  /auth/logout:
+    get:
+      summary: Logout (BFF + Keycloak Logout)
+      description: |
+        Deletes session cookies and redirects user to Keycloak logout endpoint.
+
+        After successful logout, user is redirected back to the Vue frontend.
+      tags:
+        - Authentication
+      responses:
+        "307":
+          description: Temporary Redirect (Keycloak logout)
+
+  /api/session:
+    get:
+      summary: Check Login Status
+      description: |
+        Returns the authenticated user's session info if logged in.
+
+        Used by the Vue frontend to show:
+          ✅ Username  
+          ✅ Roles  
+          ✅ Logged-in status  
+
+        If the session is invalid, returns 401.
+      tags:
+        - Session
+      responses:
+        "200":
+          description: User session data
+          content:
+            application/json:
+              schema:
+                type: object
+                example:
+                  username: "sai"
+                  roles: ["admin", "default-roles-demo-realm"]
+                  logged_in: true
+        "401":
+          description: Not authenticated
+
+  /api/dashboard:
+    get:
+      summary: Protected Admin Dashboard Endpoint
+      description: |
+        Returns dashboard data **only if the user is authenticated AND has the admin role**.
+
+        RBAC Rules:
+          - ✅ `admin` → Access allowed  
+          - ❌ any other role → 403 Forbidden  
+
+        Token refresh is handled automatically using BFF refresh logic.
+      tags:
+        - Protected
+      responses:
+        "200":
+          description: Dashboard data returned
+          content:
+            application/json:
+              schema:
+                type: object
+                example:
+                  message: "Secure dashboard accessed!"
+                  user: "sai"
+                  roles: ["admin"]
+                  issuer_used: "http://keycloak:8080/realms/demo-realm"
+                  time: 1730882351.122
+        "401":
+          description: Not authenticated
+        "403":
+          description: Forbidden – User does not have admin role
+
+  /:
+    get:
+      summary: API Health + Discovery Debug Info
+      description: |
+        Returns backend health status and which Keycloak issuer is being used.
+
+        This endpoint is primarily for debugging Keycloak discovery in Docker.
+      tags:
+        - Utility
+      responses:
+        "200":
+          description: API operational status
+          content:
+            application/json:
+              schema:
+                type: object
+                example:
+                  status: "ok"
+                  issuer_detected: "http://keycloak:8080/realms/demo-realm"
+                  possible_issuers:
+                    - "http://keycloak:8080/realms/demo-realm"
+                    - "http://host.docker.internal:8080/realms/demo-realm"
+                    - "http://localhost:8080/realms/demo-realm"
